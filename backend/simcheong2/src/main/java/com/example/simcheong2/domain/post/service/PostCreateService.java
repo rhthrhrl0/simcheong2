@@ -15,12 +15,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StopWatch;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -64,9 +68,26 @@ public class PostCreateService {
     }
 
     private List<ImageAnalysisResultDTO> uploadImages(List<MultipartFile> multipartFiles, String uploadDirRealPath) {
-        return multipartFiles.stream()
-                .map(multipartFile -> uploadImage(multipartFile, uploadDirRealPath))
-                .collect(Collectors.toList());
+        StopWatch stopWatch = new StopWatch();
+        stopWatch.start();
+
+        // 비동기 업로드 작업을 CompletableFuture 리스트로 생성
+        List<CompletableFuture<ImageAnalysisResultDTO>> futures = multipartFiles.stream()
+                .map(multipartFile -> CompletableFuture.supplyAsync(() -> uploadImage(multipartFile, uploadDirRealPath)))
+                .toList();
+
+        // 모든 작업이 완료될 때까지 기다리며 결과를 수집
+        CompletableFuture<List<ImageAnalysisResultDTO>> resultFuture = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> futures.stream()
+                        .map(CompletableFuture::join)
+                        .collect(Collectors.toList()));
+
+        // 결과 반환
+        try {
+            return resultFuture.get();
+        } catch (Exception e) {
+            throw createImageSizeException();
+        }
     }
 
     private ImageAnalysisResultDTO uploadImage(MultipartFile multipartFile, String uploadDirRealPath) {
